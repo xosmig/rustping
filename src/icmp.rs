@@ -4,6 +4,7 @@ use ::libc::{PF_INET, SOCK_RAW, SOCK_CLOEXEC, IPPROTO_ICMP};
 use ::std::io;
 use ::std::mem;
 use ::sys_return::*;
+use ::into_raw::IntoRaw;
 
 #[derive(Copy, Clone)]
 enum IcmpMessageType {
@@ -79,7 +80,7 @@ struct IcmpSocket {
 }
 
 impl IcmpSocket {
-    fn new() -> io::Result<IcmpSocket> {
+    fn new() -> io::Result<Self> {
         unsafe {
             let raw = sys_return_same(
                 libc::socket(PF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP))?;
@@ -87,21 +88,31 @@ impl IcmpSocket {
         }
     }
 
-    fn setsockopt<T>(&self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
-        unsafe {
-            sys_return_unit(libc::setsockopt(self.sockfd, level, optname,
-                                               &optval as *const _ as *const c_void,
-                                               mem::size_of::<T>() as u32))
-        }
+    fn send_to(&mut self, msg: &IcmpMessage, addr: Ipv4Addr) -> io::Result<()> {
+        let data = msg.marshal();
+        let dest_addr = addr.into_raw();
+        sys_return_unit(unsafe {
+            ::libc::sendto(self.sockfd, data.as_ptr() as *const c_void, data.len(), /*flags=*/0,
+                           &dest_addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                           mem::size_of_val(&dest_addr) as u32)
+        })
     }
 
-    pub fn getsockopt<T: Copy>(&self, level: c_int, optname: c_int) -> io::Result<T> {
+    fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
+        sys_return_unit(unsafe {
+            libc::setsockopt(self.sockfd, level, optname,
+                             &optval as *const _ as *const c_void,
+                             mem::size_of::<T>() as u32)
+        })
+    }
+
+    pub fn getsockopt<T: Copy>(&mut self, level: c_int, optname: c_int) -> io::Result<T> {
         unsafe {
             let mut optval: T = mem::zeroed();
             let mut optlen = mem::size_of::<T>() as socklen_t;
             sys_return_unit(libc::getsockopt(self.sockfd, level, optname,
-                                               &mut optval as *mut _ as *mut c_void,
-                                               &mut optlen as *mut _))?;
+                                             &mut optval as *mut _ as *mut c_void,
+                                             &mut optlen as *mut _))?;
             assert_eq!(optlen as usize, mem::size_of::<T>());
             Ok(optval)
         }

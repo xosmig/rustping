@@ -5,6 +5,7 @@ extern crate num;
 
 mod icmp;
 mod sys_return;
+mod into_raw;
 
 fn main() {
 
