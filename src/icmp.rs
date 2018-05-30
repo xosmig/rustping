@@ -145,7 +145,7 @@ impl IcmpSocket {
         })?;
 
         assert_eq!(addrlen as usize, mem::size_of_val(&source_raw));
-        panic!();
+        Ok((IcmpMessage::parse(&buf)?, Ipv4Addr::from_raw(source_raw)?))
     }
 
     fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
