@@ -1,5 +1,5 @@
 use ::std::net::Ipv4Addr;
-use ::libc::{self, sa_family_t, AF_INET};
+use ::libc::{self, AF_INET};
 use ::std::mem;
 
 pub trait IntoRaw {

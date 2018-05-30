@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use ::libc::{self, c_int, c_void, socklen_t};
 use ::libc::{PF_INET, SOCK_RAW, SOCK_CLOEXEC, IPPROTO_ICMP};
 use ::std::io;
@@ -40,6 +40,7 @@ struct IcmpMessage {
     pub message_type: IcmpMessageType,
     // ICMP subtype, see https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Control_messages
     pub code: u8,
+    pub rest_of_header: [u8; 4],
     pub body: Box<[u8]>,
 }
 
@@ -67,7 +68,8 @@ fn checksum(data: &[u8]) -> u16 {
 impl IcmpMessage {
     pub fn marshal(&self) -> Box<[u8]> {
         let mut res = vec![self.message_type as u8, self.code as u8, 0, 0];
-        res.extend(self.body.iter());
+        res.extend_from_slice(&self.rest_of_header);
+        res.extend_from_slice(self.body.as_ref());
         let cs = checksum(res.as_ref());
         res[2] = (cs & 0xFF) as u8;
         res[3] = (cs >> 8) as u8;
