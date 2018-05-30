@@ -4,35 +4,47 @@ use ::libc::{PF_INET, SOCK_RAW, SOCK_CLOEXEC, IPPROTO_ICMP};
 use ::std::io;
 use ::std::mem;
 use ::sys_return::*;
-use ::into_raw::IntoRaw;
+use ::raw::{IntoRaw, FromRaw};
+use num_traits::{FromPrimitive, ToPrimitive};
 
-#[derive(Copy, Clone)]
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Primitive)]
 enum IcmpMessageType {
-    EchoReply = 0,
     // Echo Reply
-    DestinationUnreachable = 3,
+    EchoReply = 0,
     // Destination Unreachable
-    Redirect = 5,
+    DestinationUnreachable = 3,
     // Redirect
-    Echo = 8,
+    Redirect = 5,
     // Echo
-    RouterAdvertisement = 9,
+    Echo = 8,
     // Router Advertisement
-    RouterSolicitation = 10,
+    RouterAdvertisement = 9,
     // Router Solicitation
-    TimeExceeded = 11,
+    RouterSolicitation = 10,
     // Time Exceeded
-    ParameterProblem = 12,
+    TimeExceeded = 11,
     // Parameter Problem
-    Timestamp = 13,
+    ParameterProblem = 12,
     // Timestamp
-    TimestampReply = 14,
+    Timestamp = 13,
     // Timestamp Reply
-    Photuris = 40,
+    TimestampReply = 14,
     // Photuris
-    ExtendedEchoRequest = 42,
+    Photuris = 40,
     // Extended Echo Request
-    ExtendedEchoReply = 43, // Extended Echo Reply
+    ExtendedEchoRequest = 42,
+    // Extended Echo Reply
+    ExtendedEchoReply = 43,
+}
+
+fn be_to_u16(be: &[u8]) -> u16 {
+    (be[0] as u16) + ((be[1] as u16) << 8)
+}
+
+fn u16_to_be(val: u16, be: &mut [u8]) {
+    be[0] = (val & 0xFF) as u8;
+    be[1] = (val >> 8) as u8;
 }
 
 struct IcmpMessage {
@@ -47,7 +59,7 @@ struct IcmpMessage {
 // The Internet Checksum is used, see https://tools.ietf.org/html/rfc1071
 fn checksum(data: &[u8]) -> u16 {
     fn sum(a: u16, b: u16) -> u16 {
-        let res = a as u32 + b as u32;
+        let res = (a as u32) + (b as u32);
         let carry = res & (1 << 17);
         let res = res - carry + (carry >> 17);
         debug_assert!(res < (1 << 17));
@@ -56,9 +68,11 @@ fn checksum(data: &[u8]) -> u16 {
 
     let mut res: u16 = 0;
     for i in 0..(data.len() - 1) / 2 {
-        res = sum(res, (data[2 * i + 1] << 8) as u16 | data[2 * i] as u16);
+        res = sum(res, be_to_u16(&data[2 * i..]));
     }
     if data.len() % 2 == 1 {
+        // values are in big-endian, hence the lonely byte
+        // represents the least-significant byte of a 16-bit-wise word.
         res = sum(res, data[data.len() - 1] as u16);
     }
 
@@ -67,13 +81,32 @@ fn checksum(data: &[u8]) -> u16 {
 
 impl IcmpMessage {
     pub fn marshal(&self) -> Box<[u8]> {
-        let mut res = vec![self.message_type as u8, self.code as u8, 0, 0];
+        let mut res = vec![self.message_type as u8, self.code];
+        // place for the checksum
+        res.extend_from_slice(&[0, 0]);
         res.extend_from_slice(&self.rest_of_header);
         res.extend_from_slice(self.body.as_ref());
-        let cs = checksum(res.as_ref());
-        res[2] = (cs & 0xFF) as u8;
-        res[3] = (cs >> 8) as u8;
+
+        u16_to_be(checksum(res.as_ref()), &mut res[2..4]);
         res.into()
+    }
+
+    pub fn parse(data: &[u8]) -> io::Result<IcmpMessage> {
+        if data.len() < 8 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Message is too small"));
+        }
+        let cs = be_to_u16(&data[2..4]);
+        if checksum(data) != cs {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid checksum"));
+        }
+        Ok(IcmpMessage {
+            message_type: IcmpMessageType::from_u8(data[0]).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Invalid icmp message type")
+            })?,
+            code: data[1],
+            rest_of_header: [data[4], data[5], data[6], data[7]],
+            body: Box::from(&data[8..]),
+        })
     }
 }
 
@@ -94,10 +127,25 @@ impl IcmpSocket {
         let data = msg.marshal();
         let dest_addr = addr.into_raw();
         sys_return_unit(unsafe {
-            ::libc::sendto(self.sockfd, data.as_ptr() as *const c_void, data.len(), /*flags=*/0,
-                           &dest_addr as *const libc::sockaddr_in as *const libc::sockaddr,
-                           mem::size_of_val(&dest_addr) as u32)
+            libc::sendto(self.sockfd, data.as_ptr() as *const c_void, data.len(), /*flags=*/0,
+                         &dest_addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                         mem::size_of_val(&dest_addr) as u32)
         })
+    }
+
+    pub fn recv_from(&mut self) -> io::Result<(IcmpMessage, Ipv4Addr)> {
+        let mut source_raw: libc::sockaddr_in = unsafe { mem::uninitialized() };
+        let mut addrlen = mem::size_of_val(&source_raw) as socklen_t;
+        let mut buf: [u8; 1024] = unsafe { mem::uninitialized() };
+
+        sys_return_unit(unsafe {
+            libc::recvfrom(self.sockfd, buf.as_mut_ptr() as *mut _, buf.len(), /*flags=*/ 0,
+                           &mut source_raw as *mut libc::sockaddr_in as *mut libc::sockaddr,
+                           &mut addrlen as *mut _)
+        })?;
+
+        assert_eq!(addrlen as usize, mem::size_of_val(&source_raw));
+        panic!();
     }
 
     fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {

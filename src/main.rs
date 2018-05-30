@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
+#[macro_use]
+extern crate enum_primitive_derive;
 extern crate libc;
 extern crate num;
+extern crate num_traits;
 
 mod icmp;
 mod sys_return;
-mod into_raw;
+mod raw;
 
 fn main() {
 

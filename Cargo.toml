@@ -6,3 +6,5 @@ authors = ["Andrei Tonkikh <andrei.tonkikh@gmail.com>"]
 [dependencies]
 libc = "0.2.41"
 num = "0.1.42"
+enum-primitive-derive = "0.1.2"
+num-traits = "0.2.4"
