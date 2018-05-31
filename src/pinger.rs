@@ -48,7 +48,7 @@ impl Pinger {
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    break;
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "timeout"))
                 }
                 Err(e) => {
                     eprintln!("Error receiving response: {}", e);
