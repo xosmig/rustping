@@ -1,12 +1,14 @@
-use std::net::Ipv4Addr;
+use ::std::net::Ipv4Addr;
 use ::libc::{self, c_int, c_void, socklen_t};
 use ::libc::{PF_INET, SOCK_RAW, SOCK_CLOEXEC, IPPROTO_ICMP};
 use ::std::io;
 use ::std::mem;
 use ::sys_return::*;
 use ::raw::{IntoRaw, FromRaw};
-use num_traits::FromPrimitive;
+use ::num_traits::FromPrimitive;
+use ::num_serialize::*;
 
+pub use ::libc::{timeval, SOL_SOCKET, SO_SNDTIMEO, SO_RCVTIMEO};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Primitive)]
 pub enum MessageType {
@@ -38,16 +40,7 @@ pub enum MessageType {
     ExtendedEchoReply = 43,
 }
 
-fn be_to_u16(be: &[u8]) -> u16 {
-    (be[0] as u16) + ((be[1] as u16) << 8)
-}
-
-fn u16_to_be(val: u16, be: &mut [u8]) {
-    be[0] = (val & 0xFF) as u8;
-    be[1] = (val >> 8) as u8;
-}
-
-pub struct IcmpMessage {
+pub struct Message {
     // ICMP type, see https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Control_messages
     pub message_type: MessageType,
     // ICMP subtype, see https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Control_messages
@@ -79,19 +72,19 @@ fn checksum(data: &[u8]) -> u16 {
     !res
 }
 
-impl IcmpMessage {
+impl Message {
     pub fn marshal(&self) -> Box<[u8]> {
         let mut res = vec![self.message_type as u8, self.code];
         // place for the checksum
         res.extend_from_slice(&[0, 0]);
         res.extend_from_slice(&self.rest_of_header);
         res.extend_from_slice(self.body.as_ref());
-
-        u16_to_be(checksum(res.as_ref()), &mut res[2..4]);
+        let cs = checksum(res.as_ref());
+        res[2..4].copy_from_slice(&u16_to_be(cs));
         res.into()
     }
 
-    pub fn parse(data: &[u8]) -> io::Result<IcmpMessage> {
+    pub fn parse(data: &[u8]) -> io::Result<Message> {
         if data.len() < 8 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Message is too small"));
         }
@@ -99,7 +92,7 @@ impl IcmpMessage {
         if checksum(data) != cs {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid checksum"));
         }
-        Ok(IcmpMessage {
+        Ok(Message {
             message_type: MessageType::from_u8(data[0]).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Invalid icmp message type")
             })?,
@@ -110,20 +103,20 @@ impl IcmpMessage {
     }
 }
 
-pub struct IcmpSocket {
+pub struct Socket {
     sockfd: c_int,
 }
 
-impl IcmpSocket {
+impl Socket {
     pub fn new() -> io::Result<Self> {
         unsafe {
             let raw = sys_return_same(
                 libc::socket(PF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP))?;
-            Ok(IcmpSocket { sockfd: raw })
+            Ok(Socket { sockfd: raw })
         }
     }
 
-    pub fn send_to(&mut self, msg: &IcmpMessage, addr: Ipv4Addr) -> io::Result<()> {
+    pub fn send_to(&mut self, msg: &Message, addr: Ipv4Addr) -> io::Result<()> {
         let data = msg.marshal();
         let dest_addr = addr.into_raw();
         sys_return_unit(unsafe {
@@ -133,7 +126,7 @@ impl IcmpSocket {
         })
     }
 
-    pub fn recv_from(&mut self) -> io::Result<(IcmpMessage, Ipv4Addr)> {
+    pub fn recv_from(&mut self) -> io::Result<(Message, Ipv4Addr)> {
         let mut source_raw: libc::sockaddr_in = unsafe { mem::uninitialized() };
         let mut addrlen = mem::size_of_val(&source_raw) as socklen_t;
         let mut buf: [u8; 1024] = unsafe { mem::uninitialized() };
@@ -145,7 +138,7 @@ impl IcmpSocket {
         })?;
 
         assert_eq!(addrlen as usize, mem::size_of_val(&source_raw));
-        Ok((IcmpMessage::parse(&buf)?, Ipv4Addr::from_raw(source_raw)?))
+        Ok((Message::parse(&buf)?, Ipv4Addr::from_raw(source_raw)?))
     }
 
     pub fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
@@ -165,6 +158,14 @@ impl IcmpSocket {
                                              &mut optlen as *mut _))?;
             assert_eq!(optlen as usize, mem::size_of::<T>());
             Ok(optval)
+        }
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        unsafe {
+            ::libc::close(self.sockfd);
         }
     }
 }
