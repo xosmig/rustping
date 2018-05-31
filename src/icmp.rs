@@ -5,11 +5,11 @@ use ::std::io;
 use ::std::mem;
 use ::sys_return::*;
 use ::raw::{IntoRaw, FromRaw};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::FromPrimitive;
 
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Primitive)]
-enum IcmpMessageType {
+pub enum MessageType {
     // Echo Reply
     EchoReply = 0,
     // Destination Unreachable
@@ -47,9 +47,9 @@ fn u16_to_be(val: u16, be: &mut [u8]) {
     be[1] = (val >> 8) as u8;
 }
 
-struct IcmpMessage {
+pub struct IcmpMessage {
     // ICMP type, see https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Control_messages
-    pub message_type: IcmpMessageType,
+    pub message_type: MessageType,
     // ICMP subtype, see https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol#Control_messages
     pub code: u8,
     pub rest_of_header: [u8; 4],
@@ -100,7 +100,7 @@ impl IcmpMessage {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid checksum"));
         }
         Ok(IcmpMessage {
-            message_type: IcmpMessageType::from_u8(data[0]).ok_or_else(|| {
+            message_type: MessageType::from_u8(data[0]).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Invalid icmp message type")
             })?,
             code: data[1],
@@ -110,12 +110,12 @@ impl IcmpMessage {
     }
 }
 
-struct IcmpSocket {
+pub struct IcmpSocket {
     sockfd: c_int,
 }
 
 impl IcmpSocket {
-    fn new() -> io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         unsafe {
             let raw = sys_return_same(
                 libc::socket(PF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP))?;
@@ -123,7 +123,7 @@ impl IcmpSocket {
         }
     }
 
-    fn send_to(&mut self, msg: &IcmpMessage, addr: Ipv4Addr) -> io::Result<()> {
+    pub fn send_to(&mut self, msg: &IcmpMessage, addr: Ipv4Addr) -> io::Result<()> {
         let data = msg.marshal();
         let dest_addr = addr.into_raw();
         sys_return_unit(unsafe {
@@ -148,7 +148,7 @@ impl IcmpSocket {
         Ok((IcmpMessage::parse(&buf)?, Ipv4Addr::from_raw(source_raw)?))
     }
 
-    fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
+    pub fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
         sys_return_unit(unsafe {
             libc::setsockopt(self.sockfd, level, optname,
                              &optval as *const _ as *const c_void,
