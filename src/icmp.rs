@@ -53,9 +53,9 @@ pub struct Message {
 fn checksum(data: &[u8]) -> u16 {
     fn sum(a: u16, b: u16) -> u16 {
         let res = (a as u32) + (b as u32);
-        let carry = res & (1 << 17);
-        let res = res - carry + (carry >> 17);
-        debug_assert!(res < (1 << 17));
+        let carry = res & (1 << 16);
+        let res = res - carry + (carry >> 16);
+        debug_assert!(res < (1 << 16));
         res as u16
     }
 
@@ -88,13 +88,14 @@ impl Message {
         if data.len() < 8 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Message is too small"));
         }
-        let cs = be_to_u16(&data[2..4]);
-        if checksum(data) != cs {
+        let cs = checksum(data);
+        if cs != 0 && cs != !0 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid checksum"));
         }
         Ok(Message {
             message_type: MessageType::from_u8(data[0]).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Invalid icmp message type")
+                io::Error::new(io::ErrorKind::InvalidData,
+                               format!("Invalid icmp message type: {}", data[0]))
             })?,
             code: data[1],
             rest_of_header: [data[4], data[5], data[6], data[7]],
@@ -105,6 +106,14 @@ impl Message {
 
 pub struct Socket {
     sockfd: c_int,
+}
+
+fn cut_off_ipv4_header(data: &[u8]) -> io::Result<&[u8]> {
+    if data.len() < 20 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                  "Expected IPv4 header at the beginning"));
+    }
+    Ok(&data[20..])
 }
 
 impl Socket {
@@ -129,16 +138,17 @@ impl Socket {
     pub fn recv_from(&mut self) -> io::Result<(Message, Ipv4Addr)> {
         let mut source_raw: libc::sockaddr_in = unsafe { mem::uninitialized() };
         let mut addrlen = mem::size_of_val(&source_raw) as socklen_t;
-        let mut buf: [u8; 1024] = unsafe { mem::uninitialized() };
+        let mut buf: [u8; 2048] = unsafe { mem::uninitialized() };
 
-        sys_return_unit(unsafe {
+        let m_len = sys_return(unsafe {
             libc::recvfrom(self.sockfd, buf.as_mut_ptr() as *mut _, buf.len(), /*flags=*/ 0,
                            &mut source_raw as *mut libc::sockaddr_in as *mut libc::sockaddr,
                            &mut addrlen as *mut _)
         })?;
+        let data = cut_off_ipv4_header(&buf[0..m_len])?;
 
         assert_eq!(addrlen as usize, mem::size_of_val(&source_raw));
-        Ok((Message::parse(&buf)?, Ipv4Addr::from_raw(source_raw)?))
+        Ok((Message::parse(data)?, Ipv4Addr::from_raw(source_raw)?))
     }
 
     pub fn setsockopt<T>(&mut self, level: c_int, optname: c_int, optval: T) -> io::Result<()> {
