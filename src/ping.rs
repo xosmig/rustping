@@ -39,7 +39,11 @@ pub fn ping<W: io::Write>(mut output: W, config: Config) -> io::Result<()> {
         println!("Request {}:", i + 1);
         let start = time::Instant::now();
         match pinger.ping_once(dest_ip) {
-            Ok(()) => writeln!(output, "Ok")?,
+            Ok(()) => {
+                let rtt = start.elapsed();
+                let rtt_millis = rtt.as_secs() * 1000 + (rtt.subsec_nanos() / 1_000_000) as u64;
+                writeln!(output, "Ok, round-trip-time: {} ms", rtt_millis)?
+            },
             Err(e) => writeln!(output, "Error: {}", e)?,
         };
 
